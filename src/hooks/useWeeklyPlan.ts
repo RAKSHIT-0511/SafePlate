@@ -1,10 +1,15 @@
 import { useState, useEffect, useCallback } from 'react';
+import { useAuth } from './useAuth';
 import { UserProfile } from '../types/profile';
 import { WeeklyMealPlan, PlannedMealSlot, DayOfWeek, DAYS_OF_WEEK } from '../types/mealPlan';
 import { MealType, Recipe } from '../types/recipe';
 import { RECIPES_DATASET } from '../data/recipes';
 import { evaluateSafety } from '../safety/safetyEngine';
 import { getMealPlan, saveMealPlan } from '../storage/mealRepository';
+import {
+  getSupabaseMealPlan,
+  saveSupabaseMealPlan,
+} from '../storage/supabaseMealRepository';
 
 export interface PlanFilters {
   cuisine?: string;
@@ -12,6 +17,7 @@ export interface PlanFilters {
 }
 
 export function useWeeklyPlan(activeProfile: UserProfile | null) {
+  const { user } = useAuth();
   const [mealPlan, setMealPlan] = useState<WeeklyMealPlan | null>(null);
   const [loading, setLoading] = useState(true);
 
@@ -80,10 +86,73 @@ export function useWeeklyPlan(activeProfile: UserProfile | null) {
     []
   );
 
-  // Generate a full 7-day week
+  const activeProfileId = activeProfile?.id;
+  const userId = user?.id;
+
+  // Initial load / active profile change
+  useEffect(() => {
+    let isCancelled = false;
+
+    async function loadPlan() {
+      if (!userId || !activeProfileId) {
+        setMealPlan(null);
+        setLoading(false);
+        return;
+      }
+
+      try {
+        setLoading(true);
+        // Clear previous profile's plan immediately to avoid stale visual bleed
+        setMealPlan(null);
+
+        let supabasePlan: WeeklyMealPlan | null = null;
+        try {
+          supabasePlan = await getSupabaseMealPlan(userId, activeProfileId);
+        } catch (supaErr: any) {
+          console.warn('Could not load weekly meal plan from Supabase:', supaErr.message);
+        }
+
+        if (isCancelled) return;
+
+        if (supabasePlan && supabasePlan.slots.length > 0) {
+          setMealPlan(supabasePlan);
+          // Passively cache to IndexedDB keyed by profileId
+          await saveMealPlan({
+            ...supabasePlan,
+            id: `plan_${activeProfileId}`,
+            profileId: activeProfileId,
+          }).catch(() => {});
+        } else {
+          // If offline/fallback, read local cache ONLY if matching activeProfileId
+          const local = await getMealPlan(`plan_${activeProfileId}`).catch(() => null);
+          if (isCancelled) return;
+
+          if (local && local.profileId === activeProfileId && local.slots.length > 0) {
+            setMealPlan(local);
+          } else {
+            // Profile has no weekly plan yet: clean empty state
+            setMealPlan(null);
+          }
+        }
+      } catch (err) {
+        console.error('Failed to load meal plan:', err);
+        if (!isCancelled) setMealPlan(null);
+      } finally {
+        if (!isCancelled) setLoading(false);
+      }
+    }
+
+    loadPlan();
+
+    return () => {
+      isCancelled = true;
+    };
+  }, [userId, activeProfileId]);
+
+  // Generate a full 7-day week for the active profile
   const generateWeek = useCallback(
     async (filters?: PlanFilters) => {
-      if (!activeProfile) return;
+      if (!user?.id || !activeProfile?.id) return;
 
       const currentSlots = mealPlan?.slots || [];
       const newSlots: PlannedMealSlot[] = [];
@@ -120,7 +189,6 @@ export function useWeeklyPlan(activeProfile: UserProfile | null) {
             });
             usedRecipeIds.push(safeRecipe.id);
           } else {
-            // If absolutely no recipe found, fallback to first in dataset
             const fallback = RECIPES_DATASET.find((r) => r.mealType === mType);
             newSlots.push({
               day,
@@ -132,22 +200,37 @@ export function useWeeklyPlan(activeProfile: UserProfile | null) {
         }
       }
 
-      const updatedPlan: WeeklyMealPlan = {
-        id: 'current_weekly_plan',
+      const planToSave: WeeklyMealPlan = {
+        id: mealPlan?.id || crypto.randomUUID(),
         profileId: activeProfile.id,
         slots: newSlots,
         updatedAt: new Date().toISOString(),
       };
 
-      setMealPlan(updatedPlan);
-      await saveMealPlan(updatedPlan);
+      try {
+        const saved = await saveSupabaseMealPlan(user.id, activeProfile.id, planToSave);
+        setMealPlan(saved);
+        await saveMealPlan({
+          ...saved,
+          id: `plan_${activeProfile.id}`,
+          profileId: activeProfile.id,
+        }).catch(() => {});
+      } catch (err) {
+        console.error('Failed to save meal plan to Supabase:', err);
+        setMealPlan(planToSave);
+        await saveMealPlan({
+          ...planToSave,
+          id: `plan_${activeProfile.id}`,
+          profileId: activeProfile.id,
+        }).catch(() => {});
+      }
     },
-    [activeProfile, mealPlan, findSafeRecipe]
+    [user?.id, activeProfile, mealPlan, findSafeRecipe]
   );
 
   // Toggle meal slot lock
   const toggleLock = async (day: DayOfWeek, mealType: MealType) => {
-    if (!mealPlan) return;
+    if (!mealPlan || !user?.id || !activeProfile?.id) return;
 
     const updatedSlots = mealPlan.slots.map((slot) => {
       if (slot.day === day && slot.mealType === mealType) {
@@ -156,14 +239,35 @@ export function useWeeklyPlan(activeProfile: UserProfile | null) {
       return slot;
     });
 
-    const updatedPlan = { ...mealPlan, slots: updatedSlots };
-    setMealPlan(updatedPlan);
-    await saveMealPlan(updatedPlan);
+    const updatedPlan: WeeklyMealPlan = {
+      ...mealPlan,
+      profileId: activeProfile.id,
+      slots: updatedSlots,
+      updatedAt: new Date().toISOString(),
+    };
+
+    try {
+      const saved = await saveSupabaseMealPlan(user.id, activeProfile.id, updatedPlan);
+      setMealPlan(saved);
+      await saveMealPlan({
+        ...saved,
+        id: `plan_${activeProfile.id}`,
+        profileId: activeProfile.id,
+      }).catch(() => {});
+    } catch (err) {
+      console.error('Failed to update lock in Supabase:', err);
+      setMealPlan(updatedPlan);
+      await saveMealPlan({
+        ...updatedPlan,
+        id: `plan_${activeProfile.id}`,
+        profileId: activeProfile.id,
+      }).catch(() => {});
+    }
   };
 
   // Swap a single meal with another safe one
   const swapMeal = async (day: DayOfWeek, mealType: MealType, filters?: PlanFilters) => {
-    if (!mealPlan || !activeProfile) return;
+    if (!mealPlan || !user?.id || !activeProfile?.id) return;
 
     const currentSlot = mealPlan.slots.find((s) => s.day === day && s.mealType === mealType);
     if (currentSlot && currentSlot.locked) return; // Locked meals cannot be swapped
@@ -180,51 +284,31 @@ export function useWeeklyPlan(activeProfile: UserProfile | null) {
       return slot;
     });
 
-    const updatedPlan = { ...mealPlan, slots: updatedSlots };
-    setMealPlan(updatedPlan);
-    await saveMealPlan(updatedPlan);
-  };
+    const updatedPlan: WeeklyMealPlan = {
+      ...mealPlan,
+      profileId: activeProfile.id,
+      slots: updatedSlots,
+      updatedAt: new Date().toISOString(),
+    };
 
-  // Initial load
-  useEffect(() => {
-    async function loadPlan() {
-      try {
-        setLoading(true);
-        const stored = await getMealPlan();
-        if (stored && stored.slots.length > 0) {
-          setMealPlan(stored);
-        } else if (activeProfile) {
-          // Initialize plan
-          const newSlots: PlannedMealSlot[] = [];
-          for (const dayObj of DAYS_OF_WEEK) {
-            for (const mType of ['breakfast', 'lunch', 'dinner'] as MealType[]) {
-              const safe = findSafeRecipe(mType, activeProfile);
-              newSlots.push({
-                day: dayObj.key,
-                mealType: mType,
-                recipeId: safe ? safe.id : '',
-                locked: false,
-              });
-            }
-          }
-          const initialPlan: WeeklyMealPlan = {
-            id: 'current_weekly_plan',
-            profileId: activeProfile.id,
-            slots: newSlots,
-            updatedAt: new Date().toISOString(),
-          };
-          setMealPlan(initialPlan);
-          await saveMealPlan(initialPlan);
-        }
-      } catch (err) {
-        console.error('Failed to load meal plan from IndexedDB:', err);
-      } finally {
-        setLoading(false);
-      }
+    try {
+      const saved = await saveSupabaseMealPlan(user.id, activeProfile.id, updatedPlan);
+      setMealPlan(saved);
+      await saveMealPlan({
+        ...saved,
+        id: `plan_${activeProfile.id}`,
+        profileId: activeProfile.id,
+      }).catch(() => {});
+    } catch (err) {
+      console.error('Failed to update swapped meal in Supabase:', err);
+      setMealPlan(updatedPlan);
+      await saveMealPlan({
+        ...updatedPlan,
+        id: `plan_${activeProfile.id}`,
+        profileId: activeProfile.id,
+      }).catch(() => {});
     }
-
-    loadPlan();
-  }, [activeProfile?.id]);
+  };
 
   return {
     mealPlan,

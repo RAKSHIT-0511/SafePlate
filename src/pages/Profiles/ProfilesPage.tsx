@@ -1,4 +1,5 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
+import { useSearchParams } from 'react-router-dom';
 import { UserProfile } from '../../types/profile';
 import { ProfileCard } from '../../components/profile/ProfileCard';
 import { ProfileEditor } from '../../components/profile/ProfileEditor';
@@ -8,8 +9,9 @@ interface ProfilesPageProps {
   profiles: UserProfile[];
   activeProfile: UserProfile | null;
   onSelectProfile: (id: string) => void;
-  onSaveProfile: (profile: UserProfile) => void;
-  onDeleteProfile: (id: string) => void;
+  onSaveProfile: (profile: UserProfile, isNew?: boolean) => Promise<UserProfile | void> | void;
+  onDeleteProfile: (id: string) => Promise<void> | void;
+  onReloadProfiles?: () => Promise<void> | void;
 }
 
 export const ProfilesPage: React.FC<ProfilesPageProps> = ({
@@ -18,25 +20,78 @@ export const ProfilesPage: React.FC<ProfilesPageProps> = ({
   onSelectProfile,
   onSaveProfile,
   onDeleteProfile,
+  onReloadProfiles,
 }) => {
-  const [editingProfile, setEditingProfile] = useState<UserProfile | null>(activeProfile);
-  const [isCreatingNew, setIsCreatingNew] = useState(false);
+  const [searchParams, setSearchParams] = useSearchParams();
+  const shouldCreateNew = searchParams.get('new') === 'true';
+
+  const [isCreatingNew, setIsCreatingNew] = useState(shouldCreateNew);
+  const [editingProfile, setEditingProfile] = useState<UserProfile | null>(
+    shouldCreateNew ? null : (activeProfile || profiles[0] || null)
+  );
+
+  // If search param ?new=true changes, update state
+  useEffect(() => {
+    if (shouldCreateNew && !isCreatingNew) {
+      console.log('[ProfilesPage] URL ?new=true detected. Activating create mode.');
+      setIsCreatingNew(true);
+      setEditingProfile(null);
+    }
+  }, [shouldCreateNew, isCreatingNew]);
+
+  // If editingProfile was deleted from profiles list, clear it
+  useEffect(() => {
+    if (isCreatingNew) return;
+    if (editingProfile && !profiles.some((p) => p.id === editingProfile.id)) {
+      setEditingProfile(null);
+    }
+  }, [profiles, editingProfile, isCreatingNew]);
 
   const handleStartCreate = () => {
+    console.log('[ProfilesPage] handleStartCreate clicked. Setting isCreatingNew = true, editingProfile = null');
+    setEditingProfile(null);
     setIsCreatingNew(true);
-    setEditingProfile(null);
+    if (searchParams.get('new') !== 'true') {
+      setSearchParams({ new: 'true' });
+    }
   };
 
-  const handleSave = (saved: UserProfile) => {
-    onSaveProfile(saved);
-    setIsCreatingNew(false);
-    setEditingProfile(saved);
+  const handleSave = async (saved: UserProfile, isNew?: boolean) => {
+    console.log("[CREATE DEBUG] ProfilesPage handleSave called", saved, isNew);
+    try {
+      await onSaveProfile(saved, isNew);
+      setEditingProfile(null);
+      setIsCreatingNew(false);
+      if (onReloadProfiles) {
+        console.log('[ProfilesPage] Reloading fresh profiles...');
+        await onReloadProfiles();
+      }
+      setSearchParams({});
+      console.log('[ProfilesPage] handleSave completed successfully.');
+    } catch (err) {
+      console.error('[ProfilesPage] Failed to save profile:', err);
+      throw err;
+    }
   };
 
-  const handleDelete = (id: string) => {
-    onDeleteProfile(id);
-    setIsCreatingNew(false);
+  const handleDelete = async (id: string) => {
+    try {
+      await onDeleteProfile(id);
+      setEditingProfile(null);
+      setIsCreatingNew(false);
+      if (onReloadProfiles) {
+        await onReloadProfiles();
+      }
+      setSearchParams({});
+    } catch (err) {
+      console.error('Failed to delete profile from page:', err);
+    }
+  };
+
+  const handleCancel = () => {
     setEditingProfile(null);
+    setIsCreatingNew(false);
+    setSearchParams({});
   };
 
   return (
@@ -108,10 +163,12 @@ export const ProfilesPage: React.FC<ProfilesPageProps> = ({
                     onSelectProfile(p.id);
                     setIsCreatingNew(false);
                     setEditingProfile(p);
+                    setSearchParams({});
                   }}
                   onEdit={() => {
-                    setEditingProfile(p);
                     setIsCreatingNew(false);
+                    setEditingProfile(p);
+                    setSearchParams({});
                   }}
                 />
               ))
@@ -123,19 +180,17 @@ export const ProfilesPage: React.FC<ProfilesPageProps> = ({
         <section className="lg:col-span-8 flex flex-col gap-4">
           {isCreatingNew ? (
             <ProfileEditor
+              key={isCreatingNew ? 'create-new' : editingProfile?.id ?? 'none'}
               initialProfile={null}
               onSave={handleSave}
-              onCancel={() => {
-                setIsCreatingNew(false);
-                setEditingProfile(activeProfile);
-              }}
+              onCancel={handleCancel}
             />
           ) : editingProfile ? (
             <ProfileEditor
-              key={editingProfile.id}
+              key={isCreatingNew ? 'create-new' : editingProfile?.id ?? 'none'}
               initialProfile={editingProfile}
               onSave={handleSave}
-              onCancel={() => setEditingProfile(activeProfile)}
+              onCancel={handleCancel}
               onDelete={handleDelete}
             />
           ) : (
@@ -146,6 +201,13 @@ export const ProfilesPage: React.FC<ProfilesPageProps> = ({
                 Select a household member on the left to edit their allergies and severity thresholds,
                 or create a new profile.
               </p>
+              <button
+                type="button"
+                onClick={handleStartCreate}
+                className="mt-2 h-10 px-4 rounded-xl bg-primary text-on-primary font-bold text-xs cursor-pointer active:scale-95"
+              >
+                Create Profile
+              </button>
             </div>
           )}
         </section>

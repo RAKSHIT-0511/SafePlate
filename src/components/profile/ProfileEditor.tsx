@@ -1,4 +1,4 @@
-import React, { useState } from 'react';
+import React, { useState, useEffect } from 'react';
 import { UserProfile, DEFAULT_AVATARS } from '../../types/profile';
 import { AllergenRule, AllergenSeverity } from '../../safety/types';
 import { INITIAL_ALLERGENS_LIST } from '../../data/allergens';
@@ -6,7 +6,7 @@ import { Check, AlertTriangle, ShieldCheck, ShieldAlert, Plus, X, UserCheck } fr
 
 interface ProfileEditorProps {
   initialProfile?: UserProfile | null;
-  onSave: (profile: UserProfile) => void;
+  onSave: (profile: UserProfile, isNew?: boolean) => void;
   onCancel: () => void;
   onDelete?: (id: string) => void;
 }
@@ -22,10 +22,21 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({
     initialProfile?.avatarUrl || DEFAULT_AVATARS[0]
   );
   const [allergens, setAllergens] = useState<AllergenRule[]>(
-    initialProfile?.allergens || []
+    initialProfile?.allergens ? [...initialProfile.allergens] : []
   );
   const [customInput, setCustomInput] = useState('');
   const [error, setError] = useState<string | null>(null);
+  const [isSaving, setIsSaving] = useState(false);
+
+  // When initialProfile changes (e.g. from existing member to new member null), reset all inputs cleanly
+  useEffect(() => {
+    setName(initialProfile?.name || '');
+    setAvatarUrl(initialProfile?.avatarUrl || DEFAULT_AVATARS[0]);
+    setAllergens(initialProfile?.allergens ? [...initialProfile.allergens] : []);
+    setCustomInput('');
+    setError(null);
+    setIsSaving(false);
+  }, [initialProfile]);
 
   // Toggle allergen chip on/off
   const toggleAllergen = (id: string, allergenName: string) => {
@@ -83,38 +94,60 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({
     setCustomInput('');
   };
 
-  const handleSubmit = (e: React.FormEvent) => {
+  const handleSubmit = async (e: React.FormEvent) => {
     e.preventDefault();
+    console.log("[CREATE DEBUG] submit fired");
+    console.log("[CREATE DEBUG] name:", name);
+    console.log("[CREATE DEBUG] onSave:", typeof onSave);
+
     if (!name.trim()) {
       setError('Please enter a name for this profile.');
       return;
     }
 
-    const updated: UserProfile = {
-      id: initialProfile?.id || `profile_${Date.now()}`,
-      name: name.trim(),
-      relationship: initialProfile?.relationship || 'Member',
-      avatarUrl,
-      allergens,
-      customAllergens: allergens.filter((a) => a.isCustom).map((a) => a.allergenName),
-      sharedKitchenNotes: initialProfile?.sharedKitchenNotes || ['Separate food prep utensils'],
-      createdAt: initialProfile?.createdAt || new Date().toISOString(),
-      updatedAt: new Date().toISOString(),
-    };
+    try {
+      setIsSaving(true);
+      setError(null);
+      const isNew = !initialProfile || !initialProfile.id;
+      const profileId = isNew ? crypto.randomUUID() : initialProfile.id;
 
-    onSave(updated);
+      const savedProfile: UserProfile = {
+        id: profileId,
+        name: name.trim(),
+        relationship: isEditMode && initialProfile ? initialProfile.relationship : 'Self',
+        avatarUrl,
+        allergens,
+        customAllergens: allergens.filter((a) => a.isCustom).map((a) => a.allergenName),
+        sharedKitchenNotes: isEditMode && initialProfile?.sharedKitchenNotes
+          ? initialProfile.sharedKitchenNotes
+          : ['Separate food prep utensils'],
+        createdAt: isEditMode && initialProfile?.createdAt ? initialProfile.createdAt : new Date().toISOString(),
+        updatedAt: new Date().toISOString(),
+      };
+
+      console.log("[CREATE DEBUG] CALLING onSave", savedProfile, true);
+      await onSave(savedProfile, isNew);
+    } catch (err: any) {
+      console.error("[CREATE DEBUG] onSave error:", err);
+      setError(err?.message || 'Failed to save profile');
+    } finally {
+      setIsSaving(false);
+    }
   };
+
+  const isEditMode = Boolean(initialProfile && initialProfile.id);
 
   return (
     <form
       onSubmit={handleSubmit}
+      noValidate
       className="bg-surface-container-lowest p-5 sm:p-7 rounded-2xl shadow-tactile border border-outline-variant/40 flex flex-col gap-6 animate-scale-up"
     >
       {/* Header bar */}
       <div className="flex items-center justify-between pb-3 border-b border-surface-container">
         <div>
           <h2 className="text-lg font-black text-on-surface">
-            {initialProfile ? `Edit ${initialProfile.name}` : 'Create Household Profile'}
+            {isEditMode ? `Edit ${initialProfile?.name}` : 'Create Household Profile'}
           </h2>
           <p className="text-xs text-on-surface-variant">
             Select allergies and severity levels to safeguard this member.
@@ -154,7 +187,7 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({
             setName(e.target.value);
             if (error) setError(null);
           }}
-          placeholder="e.g. Maya"
+          placeholder="Your name"
           className="w-full h-12 px-4 rounded-xl bg-surface-container-low text-on-surface font-bold text-base border border-outline-variant/40 focus:bg-surface-container-lowest focus:outline-none focus:ring-2 focus:ring-primary shadow-inner"
         />
         {error && <span className="text-xs text-error font-bold">{error}</span>}
@@ -343,7 +376,7 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({
 
       {/* ONE OBVIOUS PRIMARY ACTION: [Create Profile] */}
       <div className="flex flex-col-reverse sm:flex-row items-center justify-between gap-3 pt-3 border-t border-surface-container">
-        {initialProfile && onDelete ? (
+        {isEditMode && initialProfile && onDelete ? (
           <button
             type="button"
             onClick={() => {
@@ -369,10 +402,11 @@ export const ProfileEditor: React.FC<ProfileEditorProps> = ({
           </button>
           <button
             type="submit"
-            className="flex-1 sm:flex-initial h-12 px-7 rounded-xl bg-primary hover:bg-tertiary text-on-primary text-sm font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95"
+            disabled={isSaving || !name.trim()}
+            className="flex-1 sm:flex-initial h-12 px-7 rounded-xl bg-primary hover:bg-tertiary text-on-primary text-sm font-bold shadow-md hover:shadow-lg transition-all flex items-center justify-center gap-2 cursor-pointer active:scale-95 disabled:opacity-50 disabled:cursor-not-allowed"
           >
             <UserCheck className="w-4 h-4" />
-            <span>{initialProfile ? 'Save Profile' : 'Create Profile'}</span>
+            <span>{isSaving ? "Creating..." : (isEditMode ? "Save Profile" : "Create Profile")}</span>
           </button>
         </div>
       </div>

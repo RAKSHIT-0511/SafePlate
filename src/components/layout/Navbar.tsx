@@ -1,18 +1,23 @@
 import React, { useState } from 'react';
 import { NavLink, Link } from 'react-router-dom';
-import { ShieldCheck, ChevronDown, Check, UserPlus } from 'lucide-react';
+import { ShieldCheck, ChevronDown, Check, UserPlus, LogOut } from 'lucide-react';
 import { UserProfile } from '../../types/profile';
+import { User } from '@supabase/supabase-js';
 
 interface NavbarProps {
   profiles: UserProfile[];
   activeProfile: UserProfile | null;
   onSelectProfile: (id: string) => void;
+  user?: User | null;
+  onLogout?: () => void;
 }
 
 export const Navbar: React.FC<NavbarProps> = ({
   profiles,
   activeProfile,
   onSelectProfile,
+  user,
+  onLogout,
 }) => {
   const [dropdownOpen, setDropdownOpen] = useState(false);
 
@@ -155,7 +160,7 @@ export const Navbar: React.FC<NavbarProps> = ({
                   })}
                 </div>
 
-                <div className="pt-2 border-t border-surface-container px-2">
+                <div className="pt-2 border-t border-surface-container px-2 flex flex-col gap-1">
                   <Link
                     to="/profiles"
                     onClick={() => setDropdownOpen(false)}
@@ -164,6 +169,27 @@ export const Navbar: React.FC<NavbarProps> = ({
                     <UserPlus className="w-4 h-4" />
                     <span>Manage or Add Profiles</span>
                   </Link>
+
+                  {onLogout && (
+                    <button
+                      type="button"
+                      onClick={() => {
+                        setDropdownOpen(false);
+                        onLogout();
+                      }}
+                      className="flex items-center justify-between w-full px-3 py-2 text-xs font-semibold text-error hover:bg-error-container/20 rounded-lg transition-colors cursor-pointer"
+                    >
+                      <span className="flex items-center gap-2">
+                        <LogOut className="w-4 h-4" />
+                        <span>Sign Out</span>
+                      </span>
+                      {user?.email && (
+                        <span className="text-[10px] text-on-surface-variant truncate max-w-[110px]">
+                          {user.email}
+                        </span>
+                      )}
+                    </button>
+                  )}
                 </div>
               </div>
             </>

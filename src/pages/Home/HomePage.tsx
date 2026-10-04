@@ -23,7 +23,7 @@ export const HomePage: React.FC<HomePageProps> = ({ activeProfile }) => {
       title: 'Create Profile',
       tag: 'Name & Role',
       desc: 'Set up each person in your household.',
-      link: '/profiles',
+      link: '/profiles?new=true',
       linkText: 'Create Profile',
       icon: Users,
     },
